@@ -28,7 +28,6 @@ import psycopg2
 import geopandas as gpd
 import json
 
-
 Feature = Dict[str, Any]
 Schema = Dict[str, Any]
 BBox = Sequence
@@ -165,12 +164,12 @@ class RemoteGeoPostgreSQLService(GeoDBService):
                    "	    'properties', properties::json,\n"
                    "        'geometry', ST_AsGeoJSON(geometry)::json\n"
                    "        )\n"
-                   "        FROM \"{table_prefix}{collection}\" \n"
-                   "        WHERE {query} {max}")
+                   "        FROM \"%(collection)s\" \n"
+                   "        WHERE %(query)s %(max)s")
 
     _FILTER_LONG_SQL = ("SELECT  *\n"
-                        "        FROM \"{table_prefix}{collection}\" \n"
-                        "        WHERE {query} {max}")
+                        "        FROM \"%(collection)s\" \n"
+                        "        WHERE %(query)s %(max)s")
 
     _GET_TABLES_SQL = ("SELECT t.table_name\n"
                        "        FROM information_schema.tables t\n"
@@ -186,41 +185,38 @@ class RemoteGeoPostgreSQLService(GeoDBService):
                          "            SELECT 1\n"
                          "            FROM   information_schema.tables\n"
                          "            WHERE  table_schema = 'public'\n"
-                         "            AND    table_name = '{table_prefix}{collection}')")
+                         "            AND    table_name = '%(collection)s')")
 
-    _DROP_COLLECTION_SQL = "DROP TABLE {table_prefix}{collection}"
+    _DROP_COLLECTION_SQL = "DROP TABLE %(collection)s"
 
-    _CREATE_COLLECTION_SQL = ("\n"
-                              "            -- Table: public.{table_prefix}{collection}\n"
+    _CREATE_COLLECTION_SQL = ("            -- Table: public.%(collection)s\n"
                               "\n"
-                              "            -- DROP TABLE public.{table_prefix}{collection};\n"
+                              "            -- DROP TABLE public.%(collection)s;\n"
                               "            \n"
-                              "            CREATE TABLE public.{table_prefix}{collection}\n"
+                              "            CREATE TABLE public.%(collection)s\n"
                               "            (\n"
-                              "                -- Inherited from table public.{table_prefix}master: "
-                              "id integer NOT NULL DEFAULT nextval('{table_prefix}id_seq1'::regclass),\n"
-                              "                -- Inherited from table public.{table_prefix}master: properties json,\n"
-                              "                -- Inherited from table public.{table_prefix}master: "
+                              "                -- Inherited from table public.geodb_master: "
+                              "id integer NOT NULL DEFAULT nextval('geodb_seq1'::regclass),\n"
+                              "                -- Inherited from table public.geodb_master: properties json,\n"
+                              "                -- Inherited from table public.geodb_master: "
                               "name character varying(512) COLLATE pg_catalog.\"default\",\n"
-                              "                -- Inherited from table public.{table_prefix}master: "
+                              "                -- Inherited from table public.geodb_master: "
                               "geometry geometry,\n"
-                              "                -- Inherited from table public.{table_prefix}master: "
+                              "                -- Inherited from table public.geodb_master: "
                               "type character varying COLLATE pg_catalog.\"default\" NOT NULL\n"
-                              "                {columns}\n"
+                              "                %(columns)s\n"
                               "            )\n"
-                              "                INHERITS (public.{table_prefix}master)\n"
+                              "                INHERITS (public.geodb_master)\n"
                               "            WITH (\n"
                               "                OIDS = FALSE\n"
                               "            )\n"
                               "            TABLESPACE pg_default;\n"
                               "            \n"
-                              "            ALTER TABLE public.{table_prefix}{collection}\n"
+                              "            ALTER TABLE public.%(collection)s\n"
                               "                OWNER to postgres;\n"
                               "            ")
 
-    _GET_SRID_SQL = "SELECT  ST_SRID(geometry) FROM {collection} LIMIT 1;"
-
-    _TABLE_PREFIX = ''
+    _GET_SRID_SQL = "SELECT  ST_SRID(geometry) FROM %(collection)s LIMIT 1;"
 
     def __init__(self, host: str, user: Optional[str] = None, password: Optional[str] = None, port: int = 5432,
                  conn: object = None):
@@ -256,11 +252,11 @@ class RemoteGeoPostgreSQLService(GeoDBService):
 
     def find_feature(self, collection_name: str, query: str, fmt: str = 'geojson', bbox: BBox = None,
                      bbox_mode: str = 'contains', bbox_crs: int = 4326) -> Optional[Feature]:
-        features = self.find_features(collection_name, query, bbox=bbox, fmt=fmt, bbox_mode=bbox_mode,  max_records=1)
+        features = self.find_features(collection_name, query, bbox=bbox, fmt=fmt, bbox_mode=bbox_mode, max_records=1)
         return features[0] if features else None
 
     def _get_srid_from_collection(self, collection_name: str) -> str:
-        sql = self._GET_SRID_SQL.format(collection=collection_name)
+        sql = self._GET_SRID_SQL % dict(collection=collection_name)
         result = self.query(sql=sql)
         return result[0]
 
@@ -318,8 +314,7 @@ class RemoteGeoPostgreSQLService(GeoDBService):
         query = self._alter_query(query=query, bbox=bbox, bbox_mode=bbox_mode, fmt=fmt, srid=bbox_crs)
 
         if fmt == 'geojson':
-            self._sql = self._FILTER_SQL.format(collection=collection_name, max=limit, query=query,
-                                                table_prefix=self._TABLE_PREFIX)
+            self._sql = self._FILTER_SQL % dict(collection=collection_name, max=limit, query=query)
             cursor = self._conn.cursor()
             cursor.execute(self._sql)
 
@@ -328,8 +323,7 @@ class RemoteGeoPostgreSQLService(GeoDBService):
                 result_set.append(f[0])
             return result_set
         elif fmt == 'geopandas':
-            self._sql = self._FILTER_LONG_SQL.format(collection=collection_name, max=limit, query=query,
-                                                     table_prefix=self._TABLE_PREFIX)
+            self._sql = self._FILTER_LONG_SQL % dict(collection=collection_name, max=limit, query=query)
             result = gpd.GeoDataFrame.from_postgis(self._sql, self._conn, geom_col='geometry')
             if result.empty:
                 result = gpd.GeoDataFrame({'Message': ['empty result']})
@@ -345,8 +339,7 @@ class RemoteGeoPostgreSQLService(GeoDBService):
         for k, v in schema['properties'].items():
             columns.append(self._make_column(k, v))
 
-        sql = self._CREATE_COLLECTION_SQL.format(collection=collection_name, columns=',\n'.join(columns),
-                                                 table_prefix=self._TABLE_PREFIX)
+        sql = self._CREATE_COLLECTION_SQL % dict(collection=collection_name, columns=',\n'.join(columns))
         self.query(sql)
 
         return "Collection created"
@@ -355,7 +348,7 @@ class RemoteGeoPostgreSQLService(GeoDBService):
         if not self._collection_exists(collection_name=collection_name):
             raise ValueError(f"Collection {collection_name} does not exist")
 
-        sql = self._DROP_COLLECTION_SQL.format(collection=collection_name, table_prefix=self._TABLE_PREFIX)
+        sql = self._DROP_COLLECTION_SQL % dict(collection=collection_name)
         self.query(sql=sql)
 
     def add_feature(self, collection_name: str, feature: Feature) -> str:
@@ -385,9 +378,18 @@ class RemoteGeoPostgreSQLService(GeoDBService):
             geometry = f['geometry']
             properties = f['properties']
 
-            sql = f"INSERT INTO {self._TABLE_PREFIX}{collection_name}(properties, name, {columns}, geometry) " \
-                f"VALUES('{json.dumps(properties)}', '{properties['S_NAME']}', {values}, " \
-                f"ST_GeomFromGeoJSON('{json.dumps(geometry)}')) "
+            sql = "INSERT INTO %(collection_name)s(%(properties)s, name, " \
+                  "%(columns)s, geometry) VALUES('%(properties)s', '%(name)s', %(values)s, " \
+                  "ST_GeomFromGeoJSON('%(geometry)s)')) " % \
+                  dict(
+                      collection_name=collection_name,
+                      columns=columns,
+                      properties=json.dumps(properties),
+                      name=properties['S_NAME'],
+                      values=values,
+                      geometry=json.dumps(geometry)
+                  )
+
             self.query(sql=sql)
         return "Features Added"
 
@@ -423,7 +425,7 @@ class RemoteGeoPostgreSQLService(GeoDBService):
         return [r[0] for r in result]
 
     def _collection_exists(self, collection_name: str):
-        sql = self._TABLE_EXISTS_SQL.format(collection=collection_name, table_prefix=self._TABLE_PREFIX)
+        sql = self._TABLE_EXISTS_SQL % dict(collection=collection_name)
         return self.query(sql)[0]
 
     def _make_column(self, name: str, typ: str):
@@ -474,4 +476,3 @@ def get_geo_db_service(driver: str = 'local', **kwargs) -> GeoDBService:
         return LocalGeoDBService()
     else:
         return RemoteGeoPostgreSQLService(**kwargs)
-
